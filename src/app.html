@@ -249,6 +249,17 @@ dl.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
 .vtog button{border:0;background:none;padding:3px 10px;border-radius:6px;font-size:12px;font-weight:600;color:var(--muted);cursor:pointer}
 .vtog button[aria-pressed="true"]{background:var(--surface);color:var(--ink);box-shadow:0 1px 3px rgba(0,0,0,.14)}
 .backdrop{position:fixed;inset:0;z-index:39;background:rgba(10,15,25,.45)}
+.modalbg{position:fixed;inset:0;z-index:80;background:rgba(10,15,25,.5);display:grid;place-items:center;padding:16px}
+.modal{width:min(420px,100%);background:var(--surface);border:1px solid var(--line);border-radius:14px;box-shadow:var(--shadow);padding:20px;display:flex;flex-direction:column;gap:12px}
+.modal h2{margin:0;font-family:var(--font-display);font-size:24px;font-weight:700;text-transform:uppercase}
+.modal p{margin:0;color:var(--muted);line-height:1.45}
+.modal label{display:flex;flex-direction:column;gap:4px;font-size:13px;font-weight:600}
+.modal input[type=password]{height:42px;border:1px solid var(--line);border-radius:8px;padding:0 10px;background:var(--bg);font-size:16px}
+.modal .chk{flex-direction:row;align-items:center;gap:8px;font-weight:500}
+.modal .err{color:var(--warn);font-weight:600;font-size:13px}
+.modal .acts{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap}
+.modal ol{margin:0;padding-left:20px;line-height:1.55}
+.modal a{color:var(--accent);font-weight:600}
 .msheet .row2{display:flex;flex-direction:column;gap:12px}
 .msheet .legend{gap:8px 14px}
 
@@ -257,7 +268,7 @@ dl.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
   :root{--labw:150px;--dayw:24px}
   .top{gap:8px;padding-block:8px}
   .brand{flex:1 1 100%;gap:8px}
-  .brand small,.top>.spacer,.top>.src,#printBtn,#loadBtn{display:none}
+  .brand small,.top>.spacer,.top>.src,#printBtn,#loadBtn,#pubBtn{display:none}
   .brandrow{flex-wrap:nowrap}
   .mbtn{display:inline-flex;align-items:center;gap:6px}
   .brandrow .mfill{flex:1}
@@ -334,6 +345,7 @@ dl.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
     <div class="spacer"></div>
     <div class="src" id="src"></div>
     <button class="btn" id="printBtn" hidden>Stampa / PDF</button>
+    <button class="btn" id="pubBtn" hidden>Pubblica per il telefono</button>
     <button class="btn primary" id="loadBtn">Carica Excel</button>
     <input type="file" id="file" accept=".xlsx,.xls,.xlsm" hidden>
   </div>
@@ -367,6 +379,7 @@ dl.kv dd{margin:0;min-width:0;overflow-wrap:anywhere}
 <aside class="drawer" id="drawer" hidden aria-label="Dettaglio promo"></aside>
 <div class="drop" id="drop" hidden><div>Rilascia qui il file Excel<br><small style="font-size:15px;color:var(--muted)">Lista promo</small></div></div>
 <div class="toast" id="toast" hidden></div>
+<div class="modalbg" id="modal" hidden><form class="modal" id="modalf" autocomplete="off"></form></div>
 
 <!--XLSX-->
 <script>
@@ -773,7 +786,7 @@ function readFile(f){
       for(const sn of wb.SheetNames){try{res=parseAoa(XLSX.utils.sheet_to_json(wb.Sheets[sn],{header:1,raw:true,defval:null}));break}catch(e){err=e}}
       if(!res)throw err;
       const now=new Date();
-      setData({rows:res.rows,skipped:res.skipped,name:f.name,loadedAt:now.toLocaleDateString("it-IT")+" "+now.toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"}),demo:false},true);
+      setData({ts:Date.now(),rows:res.rows,skipped:res.skipped,name:f.name,loadedAt:now.toLocaleDateString("it-IT")+" "+now.toLocaleTimeString("it-IT",{hour:"2-digit",minute:"2-digit"}),demo:false},true);
       showSrc(); closeDetail();
       toast(`Caricate ${res.rows.length} promo da ${f.name}`+(res.skipped?` · ${res.skipped} righe senza date Sell-Out ignorate`:""));
     }catch(e){toast(e.message||"Il file non è leggibile.",true)}
@@ -814,7 +827,7 @@ $("#mClose").onclick=closeSheets;
 $("#mLoad").onclick=()=>{closeSheets();$("#file").click()};
 $("#backdrop").onclick=()=>{closeSheets();closeDetail()};
 let rzT,wasM=isMobile();window.addEventListener("resize",()=>{clearTimeout(rzT);rzT=setTimeout(()=>{if(isMobile()!==wasM){wasM=isMobile();closeSheets();render()}},150)});
-if(window.self===window.top){$("#printBtn").hidden=false;$("#printBtn").onclick=()=>window.print()}
+if(window.self===window.top){$("#printBtn").hidden=false;$("#printBtn").onclick=()=>window.print();$("#pubBtn").hidden=false;$("#pubBtn").onclick=openPublish}
 
 document.addEventListener("click",e=>{
   document.querySelectorAll("details.dd[open]").forEach(d=>{if(!d.contains(e.target))d.open=false});
@@ -850,11 +863,85 @@ window.addEventListener("dragover",e=>e.preventDefault());
 window.addEventListener("drop",e=>{e.preventDefault();dc=0;$("#drop").hidden=true;const f=e.dataTransfer?.files?.[0];if(f)readFile(f)});
 
 /* ---------- Avvio ---------- */
+/* ---------- Dati condivisi (file cifrato sul sito) ----------
+   Sul PC: "Pubblica per il telefono" crea promo.enc cifrato con una password (AES-256-GCM, chiave PBKDF2).
+   Il file va caricato in docs/data/ del repository: il sito lo legge su ogni dispositivo. */
+const ENC_URL="data/promo.enc";
+const UPLOAD_URL="https://github.com/oprincipe711-blip/Eridaniasalesapp/upload/main/docs/data";
+const STORE_PW="promoApp.pw.v1";
+const b64=buf=>{const a=new Uint8Array(buf);let s="";for(let i=0;i<a.length;i+=0x8000)s+=String.fromCharCode.apply(null,a.subarray(i,i+0x8000));return btoa(s)};
+const unb64=s=>Uint8Array.from(atob(s),c=>c.charCodeAt(0));
+async function deriveKey(pw,salt,iter){const base=await crypto.subtle.importKey("raw",new TextEncoder().encode(pw),"PBKDF2",false,["deriveKey"]);
+  return crypto.subtle.deriveKey({name:"PBKDF2",salt,iterations:iter,hash:"SHA-256"},base,{name:"AES-GCM",length:256},false,["encrypt","decrypt"])}
+async function gz(bytes,pack){const cs=pack?new CompressionStream("gzip"):new DecompressionStream("gzip");return new Uint8Array(await new Response(new Blob([bytes]).stream().pipeThrough(cs)).arrayBuffer())}
+async function encryptData(d,pw){
+  let bytes=new TextEncoder().encode(JSON.stringify(d)),z=false;
+  if(window.CompressionStream){bytes=await gz(bytes,true);z=true}
+  const salt=crypto.getRandomValues(new Uint8Array(16)),iv=crypto.getRandomValues(new Uint8Array(12)),iter=310000;
+  const ct=await crypto.subtle.encrypt({name:"AES-GCM",iv},await deriveKey(pw,salt,iter),bytes);
+  return JSON.stringify({app:"calendario-promo",v:1,ts:d.ts,z,iter,salt:b64(salt),iv:b64(iv),data:b64(ct)});
+}
+async function decryptData(env,pw){
+  let bytes=new Uint8Array(await crypto.subtle.decrypt({name:"AES-GCM",iv:unb64(env.iv)},await deriveKey(pw,unb64(env.salt),env.iter),unb64(env.data)));
+  if(env.z)bytes=await gz(bytes,false);
+  return JSON.parse(new TextDecoder().decode(bytes));
+}
+const pwGet=()=>{try{return localStorage.getItem(STORE_PW)}catch(e){return null}};
+const pwSet=v=>{try{v?localStorage.setItem(STORE_PW,v):localStorage.removeItem(STORE_PW)}catch(e){}};
+
+function modal(html,onSubmit){const bg=$("#modal"),f=$("#modalf");f.innerHTML=html;bg.hidden=false;
+  f.onsubmit=async e=>{e.preventDefault();await onSubmit(f)};
+  f.querySelectorAll("[data-close]").forEach(b=>b.onclick=()=>{bg.hidden=true});
+  const i=f.querySelector("input");if(i)setTimeout(()=>i.focus(),30)}
+const closeModal=()=>{$("#modal").hidden=true};
+
+function askPassword(env){
+  modal(`<h2>Dati protetti</h2><p>Inserisci la password dei dati promo. Ti serve solo la prima volta su questo dispositivo.</p>
+    <label>Password<input type="password" id="pw1" required></label>
+    <label class="chk"><input type="checkbox" id="pwr" checked> Ricorda su questo dispositivo</label>
+    <div class="err" id="pwe" hidden></div>
+    <div class="acts"><button type="button" class="btn" data-close>Annulla</button><button class="btn primary">Apri</button></div>`,
+  async f=>{const pw=f.querySelector("#pw1").value,e=f.querySelector("#pwe");e.hidden=true;
+    try{const d=await decryptData(env,pw);pwSet(f.querySelector("#pwr").checked?pw:null);closeModal();applyRemote(d)}
+    catch(x){e.textContent="Password errata. Riprova.";e.hidden=false}});
+}
+function applyRemote(d){setData(d,true);showSrc();closeDetail();toast("Dati aggiornati: "+(d.name||"Lista promo"))}
+async function syncRemote(){
+  if(!/^https?:$/.test(location.protocol)||window.self!==window.top)return;
+  let env;try{const r=await fetch(ENC_URL+"?t="+Date.now(),{cache:"no-store"});if(!r.ok)return;env=await r.json()}catch(e){return}
+  if(!env||!env.data)return;
+  if(DATA&&!DATA.demo&&(DATA.ts||0)>=(env.ts||0))return;
+  const pw=pwGet();
+  if(pw){try{applyRemote(await decryptData(env,pw));return}catch(e){pwSet(null)}}
+  askPassword(env);
+}
+function openPublish(){
+  if(!DATA||!DATA.rows.length){toast("Carica prima la Lista promo in Excel.",true);return}
+  if(!window.crypto||!crypto.subtle){toast("Questo browser non supporta la cifratura. Usa Chrome o Edge aggiornati.",true);return}
+  modal(`<h2>Pubblica per il telefono</h2><p>Creo il file <b>promo.enc</b> con i dati di <b>${esc(DATA.name)}</b>, cifrato con una tua password. Usa sempre la stessa password: la chiederà il telefono.</p>
+    <label>Password<input type="password" id="pw1" required minlength="8" placeholder="almeno 8 caratteri"></label>
+    <label>Ripeti password<input type="password" id="pw2" required></label>
+    <div class="err" id="pwe" hidden></div>
+    <div class="acts"><button type="button" class="btn" data-close>Annulla</button><button class="btn primary">Crea file</button></div>`,
+  async f=>{const a=f.querySelector("#pw1").value,b=f.querySelector("#pw2").value,e=f.querySelector("#pwe");
+    if(a!==b){e.textContent="Le due password non coincidono.";e.hidden=false;return}
+    const d=Object.assign({},DATA,{ts:DATA.ts||Date.now(),demo:false});
+    const blob=new Blob([await encryptData(d,a)],{type:"application/octet-stream"});
+    const u=URL.createObjectURL(blob),l=document.createElement("a");l.href=u;l.download="promo.enc";document.body.appendChild(l);l.click();l.remove();setTimeout(()=>URL.revokeObjectURL(u),5000);
+    pwSet(a);
+    modal(`<h2>File creato</h2><p>Ho scaricato <b>promo.enc</b> nella cartella Download. Ora caricalo su GitHub:</p>
+      <ol><li>Apri <a href="${UPLOAD_URL}" target="_blank" rel="noopener">la cartella dati su GitHub</a></li><li>Trascina <b>promo.enc</b> nella pagina</li><li>Premi <b>Commit changes</b></li></ol>
+      <p>Dopo circa un minuto il telefono vedrà i nuovi dati.</p>
+      <div class="acts"><button type="button" class="btn primary" data-close>Fatto</button></div>`,()=>{});
+  });
+}
+
 (function start(){
   const saved=lsGet(STORE_DATA);
-  if(saved&&Array.isArray(saved.rows)&&saved.rows.length){setData(saved,false)}
-  else if(typeof SAMPLE!=="undefined"&&SAMPLE){const r=parseAoa(SAMPLE);setData({rows:r.rows,skipped:r.skipped,name:"Dati di esempio",loadedAt:"",demo:true},false)}
-  else{$("#tl").innerHTML=`<div class="empty">Carica la Lista promo in Excel per vedere il calendario.<br><button class="btn primary" onclick="document.getElementById('file').click()">Carica Excel</button></div>`;return}
-  showSrc();
+  if(saved&&Array.isArray(saved.rows)&&saved.rows.length){setData(saved,false);showSrc()}
+  else if(typeof SAMPLE!=="undefined"&&SAMPLE){const r=parseAoa(SAMPLE);setData({rows:r.rows,skipped:r.skipped,name:"Dati di esempio",loadedAt:"",demo:true},false);showSrc()}
+  else{$("#src").textContent="Nessun dato caricato";$("#msrc").textContent="Nessun dato caricato";
+    $("#tl").innerHTML=`<div class="empty">Nessun dato ancora.<br>Sul PC: premi <b>Carica Excel</b> e poi <b>Pubblica per il telefono</b>.<br>Sul telefono i dati compaiono appena il file è pubblicato.</div>`}
+  syncRemote();
 })();
 </script>
